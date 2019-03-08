@@ -68,7 +68,7 @@ public class SVGPath {
             case "S": use(.absolute, 4, cubeSmooth)
             case "s": use(.relative, 4, cubeSmooth)
             case "Z": use(.absolute, 1, close)
-            case "z": use(.absolute, 1, close)
+            case "z": use(.relative, 1, close)
             default: numbers.append(char)
             }
         }
