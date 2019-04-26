@@ -26,6 +26,13 @@ private extension UIBezierPath {
             case .line: addLine(to: command.point)
             case .quadCurve: addQuadCurve(to: command.point, controlPoint: command.control1)
             case .cubeCurve: addCurve(to: command.point, controlPoint1: command.control1, controlPoint2: command.control2)
+            case .arc:
+                guard let center = command.center,
+                    let radius = command.radius,
+                    let startAngle = command.startAngle,
+                    let endAngle = command.endAngle,
+                    let clockwise = command.clockwise else { return }
+                addArc(withCenter: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: clockwise)
             case .close: close()
             }
         }
@@ -51,6 +58,7 @@ public class SVGPath {
     public init (_ string: String) {
         for char in string {
             switch char {
+            case "a": use(.relative, 7, arc)
             case "M": use(.absolute, 2, move)
             case "m": use(.relative, 2, move)
             case "L": use(.absolute, 2, line)
@@ -74,14 +82,14 @@ public class SVGPath {
         }
         finishLastCommand()
     }
-    
+
     private func use (_ coords: Coordinates, _ increment: Int, _ builder: @escaping SVGCommandBuilder) {
         finishLastCommand()
         self.builder = builder
         self.coords = coords
         self.increment = increment
     }
-    
+
     private func finishLastCommand () {
         for command in take(SVGPath.parseNumbers(numbers), increment: increment, coords: coords, last: commands.last, callback: builder) {
             commands.append(coords == .relative ? command.relative(to: commands.last) : command)
@@ -101,7 +109,7 @@ public extension SVGPath {
         var all:[String] = []
         var curr = ""
         var last = ""
-        
+
         for char in numbers.unicodeScalars {
             let next = String(char)
             if next == "-" && last != "" && last != "E" && last != "e" {
@@ -117,9 +125,9 @@ public extension SVGPath {
             }
             last = next
         }
-        
+
         all.append(curr)
-        
+
         return all.map { CGFloat(truncating: NSDecimalNumber(string: $0, locale: locale)) }
     }
 }
@@ -131,43 +139,59 @@ public struct SVGCommand {
     public var control1:CGPoint
     public var control2:CGPoint
     public var type:Kind
-    
+
+    public var center: CGPoint?
+    public var radius: CGFloat?
+    public var startAngle: CGFloat?
+    public var endAngle: CGFloat?
+    public var clockwise: Bool?
+
     public enum Kind {
         case move
         case line
         case cubeCurve
         case quadCurve
+        case arc
         case close
     }
-    
+
     public init () {
         let point = CGPoint()
         self.init(point, point, point, type: .close)
     }
-    
+
     public init (_ x: CGFloat, _ y: CGFloat, type: Kind) {
         let point = CGPoint(x: x, y: y)
         self.init(point, point, point, type: type)
     }
-    
+
     public init (_ cx: CGFloat, _ cy: CGFloat, _ x: CGFloat, _ y: CGFloat) {
         let control = CGPoint(x: cx, y: cy)
         self.init(control, control, CGPoint(x: x, y: y), type: .quadCurve)
     }
-    
+
     public init (_ cx1: CGFloat, _ cy1: CGFloat, _ cx2: CGFloat, _ cy2: CGFloat, _ x: CGFloat, _ y: CGFloat) {
         self.init(CGPoint(x: cx1, y: cy1), CGPoint(x: cx2, y: cy2), CGPoint(x: x, y: y), type: .cubeCurve)
     }
-    
+
     public init (_ control1: CGPoint, _ control2: CGPoint, _ point: CGPoint, type: Kind) {
         self.point = point
         self.control1 = control1
         self.control2 = control2
         self.type = type
     }
-    
+
+    public init (_ endPoint: CGPoint, _ center: CGPoint, _ radius: CGFloat, _ startAngle: CGFloat, _ endAngle: CGFloat, _ clockwise: Bool) {
+        self.init(endPoint, endPoint, endPoint, type: .arc)
+        self.center = center
+        self.radius = radius
+        self.startAngle = startAngle
+        self.endAngle = endAngle
+        self.clockwise = clockwise
+    }
+
     fileprivate func relative (to other:SVGCommand?) -> SVGCommand {
-        if let otherPoint = other?.point {
+        if let otherPoint = other?.point, self.type != .arc {
             return SVGCommand(control1 + otherPoint, control2 + otherPoint, point + otherPoint, type: type)
         }
         return self
@@ -193,8 +217,8 @@ private func take (_ numbers: [CGFloat], increment: Int, coords: Coordinates, la
     var lastCommand:SVGCommand? = last
 
     let count = (numbers.count / increment) * increment
-    var nums:[CGFloat] = [0, 0, 0, 0, 0, 0];
-    
+    var nums:[CGFloat] = [0, 0, 0, 0, 0, 0, 0];
+
     for i in stride(from: 0, to: count, by: increment) {
         for j in 0 ..< increment {
             nums[j] = numbers[i + j]
@@ -202,7 +226,7 @@ private func take (_ numbers: [CGFloat], increment: Int, coords: Coordinates, la
         lastCommand = callback(nums, lastCommand, coords)
         out.append(lastCommand!)
     }
-    
+
     return out
 }
 
@@ -270,6 +294,25 @@ private func cubeSmooth (_ numbers: [CGFloat], last: SVGCommand?, coords: Coordi
         control = control + lastPoint
     }
     return SVGCommand(control.x, control.y, numbers[0], numbers[1], numbers[2], numbers[3])
+}
+
+private func arc (_ numbers: [CGFloat], last: SVGCommand?, coords: Coordinates) -> SVGCommand {
+    assert(numbers.count == 7)
+    assert(numbers[0] == numbers[1])
+    assert(Int(numbers[2]) == 0) // Do not allow rotation
+    assert(Int(numbers[6]) == 0) // We only support relative arcs "a" and therefore relative y component has to be 0
+    assert(abs(numbers[5]) == numbers[0] * 2)
+
+    let lastPoint = last?.point ?? CGPoint()
+
+    let endPoint = lastPoint + CGPoint(x: numbers[5], y: numbers[6])
+
+    let center = CGPoint(x: (endPoint.x + lastPoint.x) / 2, y: (endPoint.y + lastPoint.y) / 2)
+    let radius = numbers[0]
+    let startAngle: CGFloat = Int(numbers[3]) == 0 ? .pi : (2 * .pi)
+    let endAngle: CGFloat = Int(numbers[3]) == 0 ? 0 : .pi
+
+    return SVGCommand(endPoint, center, radius, startAngle, endAngle, true)
 }
 
 // MARK: Zz - Close Path
