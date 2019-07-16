@@ -92,7 +92,12 @@ public class SVGPath {
 
     private func finishLastCommand () {
         for command in take(SVGPath.parseNumbers(numbers), increment: increment, coords: coords, last: commands.last, callback: builder) {
-            commands.append(coords == .relative ? command.relative(to: commands.last) : command)
+            if case .close = command.type {
+                let lastMove = commands.reversed().first { $0.type == .move }
+                commands.append(command.relative(to: lastMove))
+            } else {
+                commands.append(coords == .relative ? command.relative(to: commands.last) : command)
+            }
         }
         numbers = ""
     }
